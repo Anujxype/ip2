@@ -1,0 +1,20 @@
+services:
+  - type: worker
+    name: osint-search-bot
+    env: python
+    plan: free
+    buildCommand: python -m pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.8
+      - key: BOT_TOKEN
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: CHANNEL_USERNAME
+        sync: false
+      - key: CHANNEL_LINK
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
