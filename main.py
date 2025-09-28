@@ -30,7 +30,7 @@ GROUP_CHAT_ID = -1002414357299 # Your private group chat ID
 GROUP_LINK = "https://t.me/+bVDSE8QxqJE1M2Nl"  # Your private group invite link
 
 # Parse admin IDs from environment
-admin_ids_str = os.getenv("ADMIN_IDS", "7167145056" , "6435989814")
+admin_ids_str = os.getenv("ADMIN_IDS", "7167145056 , 6435989814")
 ADMIN_IDS = [int(id.strip()) for id in admin_ids_str.split(",") if id.strip().isdigit()]
 
 # MongoDB configuration
