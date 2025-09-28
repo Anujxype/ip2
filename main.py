@@ -23,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot configuration
-BOT_TOKEN = "7573134255:AAEkB6N9_LRvuZmz69i-PfGKY-kXvEfHlGU"
+BOT_TOKEN = "8415869688:AAHSiFfKuAo4_75e_835hgebl2iKku3RJKg"
 CHANNEL_USERNAME = "osXspace"
 CHANNEL_LINK = "https://t.me/osXspace"
 API_BASE_URL = "https://paidf2.zioniiixx.workers.dev"
