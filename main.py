@@ -26,12 +26,11 @@ CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/osXspace")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://paidf2.zioniiixx.workers.dev")
 
 # Group configuration
-GROUP_CHAT_ID = -1002414357299 # Your private group chat ID
+GROUP_CHAT_ID = -1002414357299  # Your private group chat ID
 GROUP_LINK = "https://t.me/+bVDSE8QxqJE1M2Nl"  # Your private group invite link
 
-# Parse admin IDs from environment
-admin_ids_str = os.getenv("ADMIN_IDS", "7167145056 , 6435989814")
-ADMIN_IDS = [int(id.strip()) for id in admin_ids_str.split(",") if id.strip().isdigit()]
+# Parse admin IDs from environment - Updated with both admin IDs
+ADMIN_IDS = [7167145056, 6435989814]
 
 # MongoDB configuration
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://osXspace:osXspace@cluster0.k3k6yzj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
@@ -40,9 +39,6 @@ COLLECTION_NAME = "users"
 
 # MongoDB connection options
 MONGO_OPTIONS = {
-    'tls': True,
-    'tlsAllowInvalidCertificates': True,
-    'tlsAllowInvalidHostnames': True,
     'serverSelectionTimeoutMS': 5000,
     'connectTimeoutMS': 10000,
     'socketTimeoutMS': 10000,
@@ -53,7 +49,7 @@ MONGO_OPTIONS = {
 # Global variables
 mongo_client = None
 users_collection = None
-db_connected = False  # Track connection status
+db_connected = False
 user_last_request = {}
 REQUEST_COOLDOWN = 5
 USER_DATA_CACHE = {}
@@ -111,7 +107,6 @@ async def get_user_data(user_id: int):
         if db_connected and users_collection is not None:
             user = await users_collection.find_one({"user_id": user_id})
             if user:
-                # Remove MongoDB _id field
                 user.pop('_id', None)
                 USER_DATA_CACHE[user_id] = user
                 return user
@@ -318,18 +313,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "⚡ <b>Powered by:</b> meowmeow ⚡\n"
         "🌐 Stay Safe • Respect Privacy • Use Responsibly 🚀\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        "📌 <b>⚡ Available Commands ⚡</b> 📌\n\n"
     )
     
     if is_in_group:
         welcome_message += (
-            "📱 /num — 🔎 Find details from a 10-digit mobile number\n"
-            "⚠️ <b><u>NOTE: /num command ONLY works in our private group!</u></b>\n"
+            "📌 <b>⚡ Available Commands ⚡</b> 📌\n\n"
+            "📱 /num — 🔎 Find details from a 10-digit mobile number\n\n"
+            "⚠️ <b><u>IMPORTANT: The /num command ONLY works in our private group!</u></b>\n"
             "━━━━━━━━━━━━━━━━"
         )
     else:
         welcome_message += (
-            "⚠️ <b>Important Notice:</b>\n"
+            "⚠️ <b>Important Notice:</b>\n\n"
             "The /num command is <b><u>ONLY available in our private group</u></b>.\n\n"
             "👇 <b>Join our group to use /num command:</b>"
         )
@@ -404,8 +399,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             if is_in_group:
                 message_text += (
                     "📌 <b>⚡ Available Commands ⚡</b> 📌\n\n"
-                    "📱 /num — 🔎 Find details from a 10-digit mobile number\n"
-                    "⚠️ <b><u>NOTE: /num command ONLY works in our private group!</u></b>\n"
+                    "📱 /num — 🔎 Find details from a 10-digit mobile number\n\n"
+                    "⚠️ <b><u>IMPORTANT: The /num command ONLY works in our private group!</u></b>\n"
                     "━━━━━━━━━━━━━━━━"
                 )
                 await query.edit_message_text(
@@ -414,7 +409,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 )
             else:
                 message_text += (
-                    "⚠️ <b>Important Notice:</b>\n"
+                    "⚠️ <b>Important Notice:</b>\n\n"
                     "The /num command is <b><u>ONLY available in our private group</u></b>.\n\n"
                     "👇 <b>Join our group to use /num command:</b>"
                 )
@@ -438,12 +433,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 def clean_json_response(text: str) -> str:
     """Clean and extract valid JSON from response"""
     try:
-        # Try to find JSON array
         json_match = re.search(r'\[[\s\S]*?\]', text)
         if json_match:
             return json_match.group()
         
-        # Try to find JSON object
         json_match = re.search(r'\{[\s\S]*?\}', text)
         if json_match:
             return "[" + json_match.group() + "]"
@@ -474,7 +467,6 @@ async def fetch_number_data(phone_number: str) -> dict:
                     except json.JSONDecodeError as e:
                         logger.error(f"JSON decode error: {e}")
                         
-                        # Try to extract data with regex
                         patterns = {
                             "mobile": r'"mobile"\s*:\s*"([^"]*)"',
                             "name": r'"name"\s*:\s*"([^"]*)"',
@@ -513,7 +505,6 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     # Check if command is in private chat
     if chat_type == 'private':
-        # In private chat, inform user to use command in group
         keyboard = [[InlineKeyboardButton("🔓 Join Private Group", url=GROUP_LINK)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -536,15 +527,14 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # Now we're in the correct group, proceed with checks
-    
     # Check user data
     user_data = await get_user_data(user_id)
     
     if not user_data or not user_data.get("agreed_to_terms", False):
+        bot_username = (await context.bot.get_me()).username
         await update.message.reply_text(
             "❌ <b>Access Denied</b>\n\n"
-            "Please start the bot in private chat first: @YourBotUsername\n"
+            f"Please start the bot in private chat first: @{bot_username}\n"
             "Accept the terms of use to continue.",
             parse_mode=ParseMode.HTML
         )
@@ -577,7 +567,8 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         
         await update.message.reply_text(
             "❌ To use this bot, join our channel first.",
-            reply_markup=reply_markup
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
         )
         return
     
@@ -617,7 +608,7 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     # Animation frames
     for i in range(4):
-        dots = "." * (i % 4)
+        dots = "." * ((i % 4) + 1)
         await searching_msg.edit_text(
             f"🔍 <b>Searching{dots}</b>",
             parse_mode=ParseMode.HTML
@@ -682,7 +673,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     
     try:
-        # MongoDB stats
         db_status = "✅ Connected" if db_connected else "❌ Offline"
         
         total_users = 0
@@ -698,7 +688,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 channel_joined = await users_collection.count_documents({"channel_joined": True})
                 banned_users = await users_collection.count_documents({"is_banned": True})
                 
-                # Get total searches
                 pipeline = [
                     {"$group": {"_id": None, "total": {"$sum": "$total_searches"}}}
                 ]
@@ -706,14 +695,12 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 total_searches = search_result[0]["total"] if search_result else 0
             except Exception as e:
                 logger.error(f"Error getting MongoDB stats: {e}")
-                # Fallback to cache
                 total_users = len(USER_DATA_CACHE)
                 agreed_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("agreed_to_terms", False))
                 channel_joined = sum(1 for u in USER_DATA_CACHE.values() if u.get("channel_joined", False))
                 banned_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("is_banned", False))
                 total_searches = sum(u.get("total_searches", 0) for u in USER_DATA_CACHE.values())
         else:
-            # Cache stats only
             total_users = len(USER_DATA_CACHE)
             agreed_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("agreed_to_terms", False))
             channel_joined = sum(1 for u in USER_DATA_CACHE.values() if u.get("channel_joined", False))
@@ -765,7 +752,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     broadcast_message = " ".join(context.args)
     
-    # Send status
     status_msg = await update.message.reply_text(
         "📢 <b>Broadcasting message...</b>",
         parse_mode=ParseMode.HTML
@@ -784,7 +770,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     parse_mode=ParseMode.HTML
                 )
                 success_count += 1
-                await asyncio.sleep(0.05)  # Avoid rate limits
+                await asyncio.sleep(0.05)
             except Exception as e:
                 logger.error(f"Failed to send to {user['user_id']}: {e}")
                 failed_count += 1
@@ -821,19 +807,18 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         target_user_id = int(context.args[0])
         
-        # Update cache
         if target_user_id in USER_DATA_CACHE:
             USER_DATA_CACHE[target_user_id]["is_banned"] = True
             USER_DATA_CACHE[target_user_id]["banned_date"] = datetime.now(pytz.UTC).isoformat()
         
-        # Update MongoDB
         if db_connected and users_collection is not None:
             await users_collection.update_one(
                 {"user_id": target_user_id},
                 {"$set": {
                     "is_banned": True,
                     "banned_date": datetime.now(pytz.UTC).isoformat()
-                }}
+                }},
+                upsert=True
             )
         
         await update.message.reply_text(
@@ -867,12 +852,10 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         target_user_id = int(context.args[0])
         
-        # Update cache
         if target_user_id in USER_DATA_CACHE:
             USER_DATA_CACHE[target_user_id]["is_banned"] = False
             USER_DATA_CACHE[target_user_id].pop("banned_date", None)
         
-        # Update MongoDB
         if db_connected and users_collection is not None:
             await users_collection.update_one(
                 {"user_id": target_user_id},
@@ -905,7 +888,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     # Check if it's a 10-digit number
     if clean_text and len(clean_text) == 10:
-        # If in private chat, inform about group requirement
         if chat_type == 'private':
             keyboard = [[InlineKeyboardButton("🔓 Join Private Group", url=GROUP_LINK)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
