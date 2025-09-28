@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import logging
 import os
 import sys
@@ -12,39 +15,30 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime
 import pytz
 
-# Configure logging
+# Enable logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Bot configuration from environment variables
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8415869688:AAHSiFfKuAo4_75e_835hgebl2iKku3RJKg")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "osXspace")
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/osXspace")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://paidf2.zioniiixx.workers.dev")
+# Bot configuration
+BOT_TOKEN = "7573134255:AAEkB6N9_LRvuZmz69i-PfGKY-kXvEfHlGU"
+CHANNEL_USERNAME = "osXspace"
+CHANNEL_LINK = "https://t.me/osXspace"
+API_BASE_URL = "https://paidf2.zioniiixx.workers.dev"
 
 # Group configuration
-GROUP_CHAT_ID = -1002414357299  # Your private group chat ID
-GROUP_LINK = "https://t.me/+bVDSE8QxqJE1M2Nl"  # Your private group invite link
+GROUP_CHAT_ID = -1002414357299
+GROUP_LINK = "https://t.me/+bVDSE8QxqJE1M2Nl"
 
-# Parse admin IDs from environment - Updated with both admin IDs
+# Admin IDs
 ADMIN_IDS = [7167145056, 6435989814]
 
 # MongoDB configuration
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://osXspace:osXspace@cluster0.k3k6yzj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+MONGO_URI = "mongodb+srv://osXspace:osXspace@cluster0.k3k6yzj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 DB_NAME = "osint_bot"
 COLLECTION_NAME = "users"
-
-# MongoDB connection options
-MONGO_OPTIONS = {
-    'serverSelectionTimeoutMS': 5000,
-    'connectTimeoutMS': 10000,
-    'socketTimeoutMS': 10000,
-    'maxPoolSize': 10,
-    'minPoolSize': 1
-}
 
 # Global variables
 mongo_client = None
@@ -87,7 +81,7 @@ async def init_mongodb():
     """Initialize MongoDB connection"""
     global mongo_client, users_collection, db_connected
     try:
-        mongo_client = AsyncIOMotorClient(MONGO_URI, **MONGO_OPTIONS)
+        mongo_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         db = mongo_client[DB_NAME]
         users_collection = db[COLLECTION_NAME]
         
@@ -147,7 +141,6 @@ async def get_all_users():
     except Exception as e:
         logger.error(f"Error getting all users: {e}")
     
-    # Fallback to cache
     for user_data in USER_DATA_CACHE.values():
         if user_data.get("agreed_to_terms", False):
             users.append(user_data)
@@ -159,14 +152,12 @@ async def update_user_activity(user_id: int, activity_type: str):
     try:
         timestamp = datetime.now(pytz.UTC).isoformat()
         
-        # Update cache
         if user_id in USER_DATA_CACHE:
             USER_DATA_CACHE[user_id]["last_activity"] = timestamp
             USER_DATA_CACHE[user_id]["last_activity_type"] = activity_type
             if activity_type == "search":
                 USER_DATA_CACHE[user_id]["total_searches"] = USER_DATA_CACHE[user_id].get("total_searches", 0) + 1
         
-        # Update MongoDB
         if db_connected and users_collection is not None:
             update_data = {
                 "$set": {
@@ -227,22 +218,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = user.id
     chat_type = update.effective_chat.type
     
-    # Only respond to /start in private chat
     if chat_type != 'private':
         return
     
-    # Send typing action
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, 
         action=ChatAction.TYPING
     )
     
-    # Get user data
     user_data = await get_user_data(user_id)
     
-    # New user or hasn't agreed to terms
     if not user_data or not user_data.get("agreed_to_terms", False):
-        # Create new user record
         new_user_data = {
             "user_id": user_id,
             "username": user.username,
@@ -257,7 +243,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         await save_user_data(new_user_data)
         
-        # Show disclaimer
         keyboard = [
             [
                 InlineKeyboardButton("✅ I Agree", callback_data="agree_terms"),
@@ -273,7 +258,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     
-    # Check if banned
     if user_data.get("is_banned", False):
         await update.message.reply_text(
             "❌ <b>Access Denied</b>\n\n"
@@ -282,7 +266,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     
-    # Check channel membership
     is_member = await check_channel_membership(update, context)
     
     if not is_member:
@@ -297,14 +280,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     
-    # Update channel status
     user_data["channel_joined"] = True
     await save_user_data(user_data)
     
-    # Check if user is in the group
     is_in_group = await check_group_membership(user_id, context)
     
-    # Show welcome message with group info
     welcome_message = (
         "🔍 <b>Search Bot</b>\n\n"
         "🔎 <i>Explore public data for research & awareness.</i>\n"
@@ -339,7 +319,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     
-    # Add admin commands if admin
     if user_id in ADMIN_IDS:
         welcome_message += (
             "\n\n<b>🔐 Admin Commands:</b>\n"
@@ -362,7 +341,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     if query.data == "agree_terms":
-        # Get or create user data
         user_data = await get_user_data(user_id) or {"user_id": user_id}
         user_data.update({
             "agreed_to_terms": True,
@@ -372,7 +350,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         })
         await save_user_data(user_data)
         
-        # Check channel membership
         is_member = await check_channel_membership(update, context)
         
         if not is_member:
@@ -386,7 +363,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode=ParseMode.HTML
             )
         else:
-            # Check if user is in the group
             is_in_group = await check_group_membership(user_id, context)
             
             message_text = (
@@ -503,7 +479,6 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat_id = update.effective_chat.id
     chat_type = update.effective_chat.type
     
-    # Check if command is in private chat
     if chat_type == 'private':
         keyboard = [[InlineKeyboardButton("🔓 Join Private Group", url=GROUP_LINK)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -518,7 +493,6 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # Check if command is in the authorized group
     if chat_id != GROUP_CHAT_ID:
         await update.message.reply_text(
             "⚠️ <b>Unauthorized Group!</b>\n\n"
@@ -527,7 +501,6 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # Check user data
     user_data = await get_user_data(user_id)
     
     if not user_data or not user_data.get("agreed_to_terms", False):
@@ -540,7 +513,6 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # Check if banned
     if user_data.get("is_banned", False):
         await update.message.reply_text(
             "❌ <b>Access Denied</b>\n\n"
@@ -549,7 +521,6 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # Check rate limit
     if not await check_rate_limit(user_id):
         await update.message.reply_text(
             "⏱️ <b>Please wait</b>\n\n"
@@ -558,7 +529,6 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # Check channel membership
     is_member = await check_channel_membership(update, context)
     
     if not is_member:
@@ -572,7 +542,6 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # Get phone number
     if not context.args:
         await update.message.reply_text(
             "❌ <b>Invalid Format</b>\n\n"
@@ -584,7 +553,6 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     phone_number = re.sub(r'\D', '', context.args[0].strip())
     
-    # Validate phone number
     if len(phone_number) != 10:
         await update.message.reply_text(
             "❌ <b>Invalid Number</b>\n\n"
@@ -594,51 +562,51 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
     
-    # Send searching animation
     searching_msg = await update.message.reply_text(
         "🔍 <b>Searching...</b>",
         parse_mode=ParseMode.HTML
     )
     
-    # Animate search
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action=ChatAction.TYPING
     )
     
-    # Animation frames
     for i in range(4):
         dots = "." * ((i % 4) + 1)
-        await searching_msg.edit_text(
-            f"🔍 <b>Searching{dots}</b>",
-            parse_mode=ParseMode.HTML
-        )
+        try:
+            await searching_msg.edit_text(
+                f"🔍 <b>Searching{dots}</b>",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
         await asyncio.sleep(0.3)
     
-    await searching_msg.edit_text(
-        "📡 <b>Fetching data...</b>",
-        parse_mode=ParseMode.HTML
-    )
+    try:
+        await searching_msg.edit_text(
+            "📡 <b>Fetching data...</b>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
     
-    # Fetch data
     api_result = await fetch_number_data(phone_number)
     
     if api_result["success"] and api_result["data"]:
-        # Process result
         result = api_result["data"][0]
         
-        # Remove API owner fields
         fields_to_remove = ["Api_owner", "api_owner", "API_owner"]
         for field in fields_to_remove:
             result.pop(field, None)
         
-        # Format result
         formatted_result = json.dumps(result, indent=2, ensure_ascii=False)
         
-        # Delete searching message
-        await searching_msg.delete()
+        try:
+            await searching_msg.delete()
+        except Exception:
+            pass
         
-        # Send result
         result_message = (
             f"✅ <b>Search Results for:</b> <code>{phone_number}</code>\n\n"
             f"<pre>{formatted_result}</pre>"
@@ -649,17 +617,19 @@ async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             parse_mode=ParseMode.HTML
         )
         
-        # Update activity
         await update_user_activity(user_id, "search")
         
     else:
         error_msg = api_result.get("error", "No data found")
-        await searching_msg.edit_text(
-            f"❌ <b>Search Failed</b>\n\n"
-            f"Number: <code>{phone_number}</code>\n"
-            f"Reason: {error_msg}",
-            parse_mode=ParseMode.HTML
-        )
+        try:
+            await searching_msg.edit_text(
+                f"❌ <b>Search Failed</b>\n\n"
+                f"Number: <code>{phone_number}</code>\n"
+                f"Reason: {error_msg}",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show bot statistics (admin only)"""
@@ -883,10 +853,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat_type = update.effective_chat.type
     text = update.message.text.strip()
     
-    # Extract numbers
     clean_text = re.sub(r'\D', '', text)
     
-    # Check if it's a 10-digit number
     if clean_text and len(clean_text) == 10:
         if chat_type == 'private':
             keyboard = [[InlineKeyboardButton("🔓 Join Private Group", url=GROUP_LINK)]]
@@ -900,11 +868,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 parse_mode=ParseMode.HTML
             )
         else:
-            # In group, process as /num command
             context.args = [clean_text]
             await num_command(update, context)
     else:
-        # Only respond with help in private chat
         if chat_type == 'private':
             await update.message.reply_text(
                 "❓ <b>Need help?</b>\n\n"
@@ -926,17 +892,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     except:
         pass
 
-async def post_init(application: Application) -> None:
-    """Initialize application after start"""
-    await init_mongodb()
-
-async def post_shutdown(application: Application) -> None:
-    """Cleanup on shutdown"""
-    global mongo_client
-    if mongo_client:
-        mongo_client.close()
-        logger.info("MongoDB connection closed")
-
 def main() -> None:
     """Start the bot"""
     print("=" * 50)
@@ -948,36 +903,50 @@ def main() -> None:
     print(f"👮 Admin IDs: {ADMIN_IDS}")
     print("=" * 50)
     
-    # Create application
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("num", num_command))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("broadcast", broadcast_command))
-    application.add_handler(CommandHandler("ban", ban_command))
-    application.add_handler(CommandHandler("unban", unban_command))
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    
-    # Add error handler
-    application.add_error_handler(error_handler)
-    
-    # Start polling
-    print("✅ Bot is running! Press Ctrl+C to stop.")
-    print("=" * 50)
-    
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    try:
+        # Create application with proper configuration
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Initialize MongoDB on startup
+        async def startup():
+            await init_mongodb()
+        
+        # Close MongoDB on shutdown
+        async def shutdown():
+            global mongo_client
+            if mongo_client:
+                mongo_client.close()
+                logger.info("MongoDB connection closed")
+        
+        # Add startup and shutdown handlers
+        application.post_init = startup
+        application.post_shutdown = shutdown
+        
+        # Add command handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("num", num_command))
+        application.add_handler(CommandHandler("stats", stats_command))
+        application.add_handler(CommandHandler("broadcast", broadcast_command))
+        application.add_handler(CommandHandler("ban", ban_command))
+        application.add_handler(CommandHandler("unban", unban_command))
+        
+        # Add callback and message handlers
+        application.add_handler(CallbackQueryHandler(handle_callback_query))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+        
+        # Add error handler
+        application.add_error_handler(error_handler)
+        
+        # Start polling
+        print("✅ Bot is running! Press Ctrl+C to stop.")
+        print("=" * 50)
+        
+        application.run_polling(drop_pending_updates=True)
+        
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}")
+        print(f"❌ Failed to start bot: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     try:
@@ -987,4 +956,5 @@ if __name__ == '__main__':
         sys.exit(0)
     except Exception as e:
         logger.error(f"Fatal error: {e}")
+        print(f"❌ Fatal error: {e}")
         sys.exit(1)
