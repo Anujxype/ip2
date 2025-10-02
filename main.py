@@ -11,11 +11,18 @@ from telegram.constants import ParseMode, ChatAction
 import aiohttp
 import json
 import re
-from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime
 import pytz
 import html
 from aiohttp import web
+
+# MongoDB imports (optional)
+try:
+    from motor.motor_asyncio import AsyncIOMotorClient
+    MONGODB_AVAILABLE = True
+except ImportError:
+    MONGODB_AVAILABLE = False
+    print("⚠️ MongoDB support not available, using memory storage only")
 
 # Force event loop policy for Windows compatibility
 if sys.platform.startswith('win'):
@@ -127,6 +134,12 @@ async def stop_web_server():
 async def init_mongodb():
     """Initialize MongoDB connection"""
     global mongo_client, users_collection, db_connected
+    
+    if not MONGODB_AVAILABLE:
+        logger.warning("MongoDB driver not available, using memory storage")
+        db_connected = False
+        return False
+    
     try:
         mongo_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         db = mongo_client[DB_NAME]
@@ -144,6 +157,11 @@ async def init_mongodb():
 
 async def get_user_data(user_id: int):
     """Get user data from MongoDB or cache"""
+    # First check cache
+    if user_id in USER_DATA_CACHE:
+        return USER_DATA_CACHE[user_id]
+    
+    # Then try MongoDB if connected
     try:
         if db_connected and users_collection is not None:
             user = await users_collection.find_one({"user_id": user_id})
@@ -152,9 +170,9 @@ async def get_user_data(user_id: int):
                 USER_DATA_CACHE[user_id] = user
                 return user
     except Exception as e:
-        logger.error(f"Error getting user data: {e}")
+        logger.error(f"Error getting user data from MongoDB: {e}")
     
-    return USER_DATA_CACHE.get(user_id, None)
+    return None
 
 async def save_user_data(user_data: dict):
     """Save or update user data"""
@@ -170,14 +188,15 @@ async def save_user_data(user_data: dict):
             )
             return True
     except Exception as e:
-        logger.error(f"Error saving user data: {e}")
+        logger.error(f"Error saving user data to MongoDB: {e}")
     
-    return True
+    return True  # Return True even if MongoDB fails (data is in cache)
 
 async def get_all_users():
     """Get all users who agreed to terms"""
     users = []
     
+    # First try MongoDB
     try:
         if db_connected and users_collection is not None:
             async for user in users_collection.find({"agreed_to_terms": True}):
@@ -186,8 +205,9 @@ async def get_all_users():
             if users:
                 return users
     except Exception as e:
-        logger.error(f"Error getting all users: {e}")
+        logger.error(f"Error getting all users from MongoDB: {e}")
     
+    # Fallback to cache
     for user_data in USER_DATA_CACHE.values():
         if user_data.get("agreed_to_terms", False):
             users.append(user_data)
@@ -199,12 +219,14 @@ async def update_user_activity(user_id: int, activity_type: str):
     try:
         timestamp = datetime.now(pytz.UTC).isoformat()
         
+        # Update cache
         if user_id in USER_DATA_CACHE:
             USER_DATA_CACHE[user_id]["last_activity"] = timestamp
             USER_DATA_CACHE[user_id]["last_activity_type"] = activity_type
             if activity_type.startswith("search"):
                 USER_DATA_CACHE[user_id]["total_searches"] = USER_DATA_CACHE[user_id].get("total_searches", 0) + 1
         
+        # Try to update MongoDB
         if db_connected and users_collection is not None:
             update_data = {
                 "$set": {
@@ -984,7 +1006,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     
     try:
-        db_status = "✅ Connected" if db_connected else "❌ Offline"
+        db_status = "✅ Connected" if db_connected else "❌ Offline (Using Memory)"
         
         total_users = 0
         agreed_users = 0
@@ -1006,12 +1028,14 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 total_searches = search_result[0]["total"] if search_result else 0
             except Exception as e:
                 logger.error(f"Error getting MongoDB stats: {e}")
+                # Fallback to cache
                 total_users = len(USER_DATA_CACHE)
                 agreed_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("agreed_to_terms", False))
                 channel_joined = sum(1 for u in USER_DATA_CACHE.values() if u.get("channel_joined", False))
                 banned_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("is_banned", False))
                 total_searches = sum(u.get("total_searches", 0) for u in USER_DATA_CACHE.values())
         else:
+            # Use cache data
             total_users = len(USER_DATA_CACHE)
             agreed_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("agreed_to_terms", False))
             channel_joined = sum(1 for u in USER_DATA_CACHE.values() if u.get("channel_joined", False))
@@ -1126,10 +1150,14 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         target_user_id = int(context.args[0])
         
-        if target_user_id in USER_DATA_CACHE:
-            USER_DATA_CACHE[target_user_id]["is_banned"] = True
-            USER_DATA_CACHE[target_user_id]["banned_date"] = datetime.now(pytz.UTC).isoformat()
+        # Update cache
+        if target_user_id not in USER_DATA_CACHE:
+            USER_DATA_CACHE[target_user_id] = {"user_id": target_user_id}
         
+        USER_DATA_CACHE[target_user_id]["is_banned"] = True
+        USER_DATA_CACHE[target_user_id]["banned_date"] = datetime.now(pytz.UTC).isoformat()
+        
+        # Try to update MongoDB
         if db_connected and users_collection is not None:
             await users_collection.update_one(
                 {"user_id": target_user_id},
@@ -1171,10 +1199,12 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         target_user_id = int(context.args[0])
         
+        # Update cache
         if target_user_id in USER_DATA_CACHE:
             USER_DATA_CACHE[target_user_id]["is_banned"] = False
             USER_DATA_CACHE[target_user_id].pop("banned_date", None)
         
+        # Try to update MongoDB
         if db_connected and users_collection is not None:
             await users_collection.update_one(
                 {"user_id": target_user_id},
