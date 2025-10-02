@@ -58,7 +58,7 @@ USER_DATA_CACHE = {}
 
 # Disclaimer text
 DISCLAIMER_TEXT = """
-🔍 <b>Advanced OSINT Search Bot - Terms of Use</b>
+🔍 <b>Advanced OSINT Search Bot 𝐒𝐓𝐀𝐑𝐊 𝐍𝐄𝐓𝐖𝐎𝐑𝐊 🇮🇳 - Terms of Use</b>
 
 <b>⚠️ Important Disclaimer:</b>
 
@@ -423,7 +423,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "🏥 /icmr <code>[number]</code> — ICMR database search\n"
             "🚗 /vehicle <code>[registration]</code> — Vehicle information\n"
             "📋 /challan <code>[registration]</code> — Vehicle challan details\n\n"
-            "⚠️ <b><u>These commands ONLY work in our private group!</u></b>\n"
+            "⚠️ <b><u>These commands ONLY work in our private group! 𝐒𝐓𝐀𝐑𝐊 𝐍𝐄𝐓𝐖𝐎𝐑𝐊 🇮🇳</u></b>\n"
             "━━━━━━━━━━━━━━━━"
         )
     else:
