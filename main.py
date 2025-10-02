@@ -63,8 +63,34 @@ application = None
 web_app = None
 web_runner = None
 
-# [Include all the previous bot functions here - same as before]
-# ... (All the async functions from the previous code remain the same)
+# Disclaimer text
+DISCLAIMER_TEXT = """
+🔍 <b>Advanced OSINT Search Bot - Terms of Use</b>
+
+<b>⚠️ Important Disclaimer:</b>
+
+🔎 Advanced Search Bot – Explore public data for research & awareness. 
+❌ No illegal use. 
+👨‍💻 Respect Privacy • Use Responsibly
+
+• <b>By using this bot, you agree to:</b>
+  ✓ Use data responsibly and ethically
+  ✓ Respect privacy of individuals
+  ✓ NOT use for illegal activities
+  ✓ NOT use for harassment or stalking
+  ✓ Comply with all applicable laws
+
+• <b>Prohibited Uses:</b>
+  ✗ Any illegal activity
+  ✗ Harassment or stalking
+  ✗ Identity theft or fraud
+  ✗ Violation of privacy rights
+
+• The bot owners are NOT responsible for misuse of information.
+• Data provided is from public sources and may not be accurate.
+
+<b>By clicking "I Agree", you accept these terms and conditions.</b>
+"""
 
 # Web server for Render health checks
 async def health_check(request):
@@ -75,15 +101,18 @@ async def start_web_server():
     """Start web server for Render health checks"""
     global web_app, web_runner
     
-    web_app = web.Application()
-    web_app.router.add_get('/', health_check)
-    web_app.router.add_get('/health', health_check)
-    
-    web_runner = web.AppRunner(web_app)
-    await web_runner.setup()
-    site = web.TCPSite(web_runner, '0.0.0.0', PORT)
-    await site.start()
-    logger.info(f"Web server started on port {PORT}")
+    try:
+        web_app = web.Application()
+        web_app.router.add_get('/', health_check)
+        web_app.router.add_get('/health', health_check)
+        
+        web_runner = web.AppRunner(web_app)
+        await web_runner.setup()
+        site = web.TCPSite(web_runner, '0.0.0.0', PORT)
+        await site.start()
+        logger.info(f"Web server started on port {PORT}")
+    except Exception as e:
+        logger.error(f"Failed to start web server: {e}")
 
 async def stop_web_server():
     """Stop web server"""
@@ -91,6 +120,24 @@ async def stop_web_server():
     if web_runner:
         await web_runner.cleanup()
         logger.info("Web server stopped")
+
+async def init_mongodb():
+    """Initialize MongoDB connection"""
+    global mongo_client, users_collection, db_connected
+    try:
+        mongo_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        db = mongo_client[DB_NAME]
+        users_collection = db[COLLECTION_NAME]
+        
+        # Test connection
+        await mongo_client.admin.command('ping')
+        db_connected = True
+        logger.info("✅ MongoDB connected successfully")
+        return True
+    except Exception as e:
+        logger.error(f"❌ MongoDB connection failed: {e}")
+        db_connected = False
+        return False
 
 async def post_init(application: Application) -> None:
     """Initialize resources on startup"""
@@ -108,8 +155,1104 @@ async def post_shutdown(application: Application) -> None:
         mongo_client.close()
         logger.info("MongoDB connection closed")
 
-# [Include all the command handlers and other functions from previous code]
-# ... (All handlers remain the same)
+async def get_user_data(user_id: int):
+    """Get user data from MongoDB or cache"""
+    try:
+        if db_connected and users_collection is not None:
+            user = await users_collection.find_one({"user_id": user_id})
+            if user:
+                user.pop('_id', None)
+                USER_DATA_CACHE[user_id] = user
+                return user
+    except Exception as e:
+        logger.error(f"Error getting user data: {e}")
+    
+    return USER_DATA_CACHE.get(user_id, None)
+
+async def save_user_data(user_data: dict):
+    """Save or update user data"""
+    user_id = user_data["user_id"]
+    USER_DATA_CACHE[user_id] = user_data
+    
+    try:
+        if db_connected and users_collection is not None:
+            await users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": user_data},
+                upsert=True
+            )
+            return True
+    except Exception as e:
+        logger.error(f"Error saving user data: {e}")
+    
+    return True
+
+async def get_all_users():
+    """Get all users who agreed to terms"""
+    users = []
+    
+    try:
+        if db_connected and users_collection is not None:
+            async for user in users_collection.find({"agreed_to_terms": True}):
+                user.pop('_id', None)
+                users.append(user)
+            if users:
+                return users
+    except Exception as e:
+        logger.error(f"Error getting all users: {e}")
+    
+    for user_data in USER_DATA_CACHE.values():
+        if user_data.get("agreed_to_terms", False):
+            users.append(user_data)
+    
+    return users
+
+async def update_user_activity(user_id: int, activity_type: str):
+    """Update user's last activity"""
+    try:
+        timestamp = datetime.now(pytz.UTC).isoformat()
+        
+        if user_id in USER_DATA_CACHE:
+            USER_DATA_CACHE[user_id]["last_activity"] = timestamp
+            USER_DATA_CACHE[user_id]["last_activity_type"] = activity_type
+            if activity_type.startswith("search"):
+                USER_DATA_CACHE[user_id]["total_searches"] = USER_DATA_CACHE[user_id].get("total_searches", 0) + 1
+        
+        if db_connected and users_collection is not None:
+            update_data = {
+                "$set": {
+                    "last_activity": timestamp,
+                    "last_activity_type": activity_type
+                }
+            }
+            if activity_type.startswith("search"):
+                update_data["$inc"] = {"total_searches": 1}
+            
+            await users_collection.update_one(
+                {"user_id": user_id},
+                update_data
+            )
+    except Exception as e:
+        logger.error(f"Error updating user activity: {e}")
+
+async def check_rate_limit(user_id: int) -> bool:
+    """Check if user is rate limited"""
+    current_time = asyncio.get_event_loop().time()
+    
+    if user_id in user_last_request:
+        time_diff = current_time - user_last_request[user_id]
+        if time_diff < REQUEST_COOLDOWN:
+            return False
+    
+    user_last_request[user_id] = current_time
+    return True
+
+async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if user is member of required channel"""
+    try:
+        user_id = update.effective_user.id
+        chat_member = await context.bot.get_chat_member(
+            chat_id=f"@{CHANNEL_USERNAME}",
+            user_id=user_id
+        )
+        return chat_member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        logger.warning(f"Channel check failed: {e}")
+        return False
+
+async def check_group_membership(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if user is member of the private group"""
+    try:
+        chat_member = await context.bot.get_chat_member(
+            chat_id=GROUP_CHAT_ID,
+            user_id=user_id
+        )
+        return chat_member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        logger.warning(f"Group check failed for user {user_id}: {e}")
+        return False
+
+async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE, check_group: bool = False) -> bool:
+    """Check if user has access to use bot commands"""
+    user_id = update.effective_user.id
+    
+    # Check if user agreed to terms
+    user_data = await get_user_data(user_id)
+    
+    if not user_data or not user_data.get("agreed_to_terms", False):
+        bot_username = (await context.bot.get_me()).username
+        await update.message.reply_text(
+            "❌ <b>Access Denied</b>\n\n"
+            f"Please start the bot in private chat first: @{bot_username}\n"
+            "Accept the terms of use to continue.",
+            parse_mode=ParseMode.HTML
+        )
+        return False
+    
+    # Check if banned
+    if user_data.get("is_banned", False):
+        await update.message.reply_text(
+            "❌ <b>Access Denied</b>\n\n"
+            "Your account has been banned from using this bot.",
+            parse_mode=ParseMode.HTML
+        )
+        return False
+    
+    # Check rate limit
+    if not await check_rate_limit(user_id):
+        await update.message.reply_text(
+            "⏱️ <b>Please wait</b>\n\n"
+            f"You can only make one request every {REQUEST_COOLDOWN} seconds.",
+            parse_mode=ParseMode.HTML
+        )
+        return False
+    
+    # Check channel membership
+    is_member = await check_channel_membership(update, context)
+    if not is_member:
+        keyboard = [[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "❌ To use this bot, join our channel first.",
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
+        )
+        return False
+    
+    # Check group membership if required
+    if check_group:
+        chat_id = update.effective_chat.id
+        if chat_id != GROUP_CHAT_ID:
+            keyboard = [[InlineKeyboardButton("🔓 Join Private Group", url=GROUP_LINK)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                "⚠️ <b>Command Not Available Here!</b>\n\n"
+                "This command is <b><u>ONLY available in our private group</u></b>.\n\n"
+                "👇 <b>Please join our group to use this command:</b>",
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML
+            )
+            return False
+    
+    return True
+
+def clean_json_response(text: str) -> str:
+    """Clean and extract valid JSON from response"""
+    try:
+        json_match = re.search(r'\[[\s\S]*?\]', text)
+        if json_match:
+            return json_match.group()
+        
+        json_match = re.search(r'\{[\s\S]*?\}', text)
+        if json_match:
+            return "[" + json_match.group() + "]"
+        
+        return text
+    except Exception:
+        return text
+
+async def fetch_api_data(url: str, timeout: int = 15) -> dict:
+    """Generic API data fetcher"""
+    try:
+        timeout_obj = aiohttp.ClientTimeout(total=timeout)
+        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    text_response = await response.text()
+                    
+                    try:
+                        # Try to parse as JSON
+                        cleaned_response = clean_json_response(text_response)
+                        data = json.loads(cleaned_response)
+                        
+                        if not isinstance(data, list):
+                            data = [data] if data else []
+                        
+                        return {"success": True, "data": data}
+                    except json.JSONDecodeError:
+                        # Return raw text if not JSON
+                        return {"success": True, "raw_data": text_response}
+                else:
+                    return {"success": False, "error": f"API error: Status {response.status}"}
+                    
+    except asyncio.TimeoutError:
+        return {"success": False, "error": "Request timeout - Please try again"}
+    except Exception as e:
+        logger.error(f"API request error: {e}")
+        return {"success": False, "error": "Connection error"}
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /start command"""
+    user = update.effective_user
+    user_id = user.id
+    chat_type = update.effective_chat.type
+    
+    if chat_type != 'private':
+        return
+    
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, 
+        action=ChatAction.TYPING
+    )
+    
+    user_data = await get_user_data(user_id)
+    
+    if not user_data or not user_data.get("agreed_to_terms", False):
+        new_user_data = {
+            "user_id": user_id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "joined_date": datetime.now(pytz.UTC).isoformat(),
+            "agreed_to_terms": False,
+            "channel_joined": False,
+            "total_searches": 0,
+            "is_banned": False
+        }
+        
+        await save_user_data(new_user_data)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ I Agree", callback_data="agree_terms"),
+                InlineKeyboardButton("❌ I Don't Agree", callback_data="disagree_terms")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            DISCLAIMER_TEXT,
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    if user_data.get("is_banned", False):
+        await update.message.reply_text(
+            "❌ <b>Access Denied</b>\n\n"
+            "Your account has been banned from using this bot.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    is_member = await check_channel_membership(update, context)
+    
+    if not is_member:
+        keyboard = [[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "❌ <b>Access Denied</b>\n\n"
+            "To use this bot, join our channel first.",
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    user_data["channel_joined"] = True
+    await save_user_data(user_data)
+    
+    is_in_group = await check_group_membership(user_id, context)
+    
+    welcome_message = (
+        "🔍 <b>Advanced OSINT Search Bot</b>\n\n"
+        "🔎 <i>Explore public data for research & awareness.</i>\n"
+        "❌ <b>No illegal use.</b>\n"
+        "👨‍💻 Respect Privacy • Use Responsibly\n\n"
+        "⚡ <b>Powered by:</b> osXspace ⚡\n"
+        "🌐 Stay Safe • Respect Privacy • Use Responsibly 🚀\n\n"
+        "━━━━━━━━━━━━━━━━\n"
+    )
+    
+    if is_in_group:
+        welcome_message += (
+            "📌 <b>⚡ Available Commands ⚡</b> 📌\n\n"
+            "📱 /num <code>[number]</code> — Find details from a 10-digit mobile number\n"
+            "🆔 /aadhaar <code>[number]</code> — Rashan card family details\n"
+            "💳 /upi <code>[upi_id]</code> — UPI information\n"
+            "🏥 /icmr <code>[number]</code> — ICMR database search\n"
+            "🚗 /vehicle <code>[registration]</code> — Vehicle information\n"
+            "📋 /challan <code>[registration]</code> — Vehicle challan details\n\n"
+            "⚠️ <b><u>These commands ONLY work in our private group!</u></b>\n"
+            "━━━━━━━━━━━━━━━━"
+        )
+    else:
+        welcome_message += (
+            "⚠️ <b>Important Notice:</b>\n\n"
+            "All search commands are <b><u>ONLY available in our private group</u></b>.\n\n"
+            "👇 <b>Join our group to use all features:</b>"
+        )
+        
+        keyboard = [[InlineKeyboardButton("🔓 Join Private Group", url=GROUP_LINK)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            welcome_message,
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    if user_id in ADMIN_IDS:
+        welcome_message += (
+            "\n\n<b>🔐 Admin Commands:</b>\n"
+            "📊 /stats — View bot statistics\n"
+            "📢 /broadcast <code>[message]</code> — Send to all users\n"
+            "🚫 /ban <code>[user_id]</code> — Ban user\n"
+            "✅ /unban <code>[user_id]</code> — Unban user"
+        )
+    
+    await update.message.reply_text(
+        welcome_message,
+        parse_mode=ParseMode.HTML
+    )
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle callback queries from inline buttons"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    await query.answer()
+    
+    if query.data == "agree_terms":
+        user_data = await get_user_data(user_id) or {"user_id": user_id}
+        user_data.update({
+            "agreed_to_terms": True,
+            "terms_agreed_date": datetime.now(pytz.UTC).isoformat(),
+            "username": query.from_user.username,
+            "first_name": query.from_user.first_name
+        })
+        await save_user_data(user_data)
+        
+        is_member = await check_channel_membership(update, context)
+        
+        if not is_member:
+            keyboard = [[InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                "✅ <b>Terms Accepted!</b>\n\n"
+                "Now, please join our channel to continue:",
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            is_in_group = await check_group_membership(user_id, context)
+            
+            message_text = (
+                "✅ <b>Terms Accepted!</b>\n\n"
+                "⚡ <b>Powered by:</b> osXspace ⚡\n"
+                "🌐 Stay Safe • Respect Privacy • Use Responsibly 🚀\n\n"
+                "━━━━━━━━━━━━━━━━\n"
+            )
+            
+            if is_in_group:
+                message_text += (
+                    "📌 <b>⚡ Available Commands ⚡</b> 📌\n\n"
+                    "📱 /num — Mobile number search\n"
+                    "🆔 /aadhaar — Rashan card search\n"
+                    "💳 /upi — UPI information\n"
+                    "🏥 /icmr — ICMR database\n"
+                    "🚗 /vehicle — Vehicle info\n"
+                    "📋 /challan — Vehicle challan\n\n"
+                    "⚠️ <b><u>Commands ONLY work in our private group!</u></b>\n"
+                    "━━━━━━━━━━━━━━━━"
+                )
+                await query.edit_message_text(
+                    message_text,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                message_text += (
+                    "⚠️ <b>Important Notice:</b>\n\n"
+                    "All search commands are <b><u>ONLY available in our private group</u></b>.\n\n"
+                    "👇 <b>Join our group to use all features:</b>"
+                )
+                keyboard = [[InlineKeyboardButton("🔓 Join Private Group", url=GROUP_LINK)]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    message_text,
+                    reply_markup=reply_markup,
+                    parse_mode=ParseMode.HTML
+                )
+    
+    elif query.data == "disagree_terms":
+        await query.edit_message_text(
+            "❌ <b>Terms Not Accepted</b>\n\n"
+            "You must agree to the terms of use to access this bot.\n"
+            "Use /start to review the terms again.",
+            parse_mode=ParseMode.HTML
+        )
+
+async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /num command to search phone numbers"""
+    if not await check_user_access(update, context, check_group=True):
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ <b>Invalid Format</b>\n\n"
+            "Please provide a 10-digit mobile number.\n"
+            "Example: <code>/num 9876543210</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    phone_number = re.sub(r'\D', '', context.args[0].strip())
+    
+    if len(phone_number) != 10:
+        await update.message.reply_text(
+            "❌ <b>Invalid Number</b>\n\n"
+            "Please provide a valid 10-digit mobile number.\n"
+            "Example: <code>/num 9876543210</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    searching_msg = await update.message.reply_text(
+        "🔍 <b>Searching mobile number database...</b>",
+        parse_mode=ParseMode.HTML
+    )
+    
+    api_result = await fetch_api_data(f"{API_BASE_URL}{phone_number}")
+    
+    if api_result["success"]:
+        if "data" in api_result and api_result["data"]:
+            result = api_result["data"][0]
+            
+            # Remove API owner fields
+            fields_to_remove = ["Api_owner", "api_owner", "API_owner"]
+            for field in fields_to_remove:
+                result.pop(field, None)
+            
+            formatted_result = json.dumps(result, indent=2, ensure_ascii=False)
+            
+            await searching_msg.edit_text(
+                f"✅ <b>Mobile Number Search Results:</b>\n\n"
+                f"📱 Number: <code>{phone_number}</code>\n\n"
+                f"<pre>{formatted_result}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await searching_msg.edit_text(
+                f"❌ <b>No Data Found</b>\n\n"
+                f"Number: <code>{phone_number}</code>\n"
+                f"No records found in database.",
+                parse_mode=ParseMode.HTML
+            )
+    else:
+        await searching_msg.edit_text(
+            f"❌ <b>Search Failed</b>\n\n"
+            f"Number: <code>{phone_number}</code>\n"
+            f"Error: {api_result.get('error', 'Unknown error')}",
+            parse_mode=ParseMode.HTML
+        )
+    
+    await update_user_activity(update.effective_user.id, "search_mobile")
+
+async def aadhaar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /aadhaar command for Rashan card family details"""
+    if not await check_user_access(update, context, check_group=True):
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ <b>Invalid Format</b>\n\n"
+            "Please provide an Aadhaar number.\n"
+            "Example: <code>/aadhaar 123456789012</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    aadhaar = re.sub(r'\D', '', context.args[0].strip())
+    
+    if len(aadhaar) != 12:
+        await update.message.reply_text(
+            "❌ <b>Invalid Aadhaar Number</b>\n\n"
+            "Please provide a valid 12-digit Aadhaar number.\n"
+            "Example: <code>/aadhaar 123456789012</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    searching_msg = await update.message.reply_text(
+        "🔍 <b>Searching Rashan card database...</b>",
+        parse_mode=ParseMode.HTML
+    )
+    
+    api_result = await fetch_api_data(RASHAN_API.format(aadhaar=aadhaar))
+    
+    if api_result["success"]:
+        if "data" in api_result and api_result["data"]:
+            formatted_result = json.dumps(api_result["data"], indent=2, ensure_ascii=False)
+            
+            await searching_msg.edit_text(
+                f"✅ <b>Rashan Card Family Details:</b>\n\n"
+                f"🆔 Aadhaar: <code>{aadhaar}</code>\n\n"
+                f"<pre>{formatted_result}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        elif "raw_data" in api_result:
+            await searching_msg.edit_text(
+                f"✅ <b>Rashan Card Family Details:</b>\n\n"
+                f"🆔 Aadhaar: <code>{aadhaar}</code>\n\n"
+                f"<pre>{html.escape(api_result['raw_data'][:3000])}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await searching_msg.edit_text(
+                f"❌ <b>No Data Found</b>\n\n"
+                f"Aadhaar: <code>{aadhaar}</code>\n"
+                f"No records found in database.",
+                parse_mode=ParseMode.HTML
+            )
+    else:
+        await searching_msg.edit_text(
+            f"❌ <b>Search Failed</b>\n\n"
+            f"Aadhaar: <code>{aadhaar}</code>\n"
+            f"Error: {api_result.get('error', 'Unknown error')}",
+            parse_mode=ParseMode.HTML
+        )
+    
+    await update_user_activity(update.effective_user.id, "search_aadhaar")
+
+async def upi_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /upi command for UPI information"""
+    if not await check_user_access(update, context, check_group=True):
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ <b>Invalid Format</b>\n\n"
+            "Please provide a UPI ID.\n"
+            "Example: <code>/upi username@paytm</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    upi_id = context.args[0].strip().lower()
+    
+    if '@' not in upi_id:
+        await update.message.reply_text(
+            "❌ <b>Invalid UPI ID</b>\n\n"
+            "Please provide a valid UPI ID.\n"
+            "Example: <code>/upi username@paytm</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    searching_msg = await update.message.reply_text(
+        "🔍 <b>Searching UPI database...</b>",
+        parse_mode=ParseMode.HTML
+    )
+    
+    api_result = await fetch_api_data(UPI_API.format(upi_id=upi_id))
+    
+    if api_result["success"]:
+        if "data" in api_result and api_result["data"]:
+            formatted_result = json.dumps(api_result["data"], indent=2, ensure_ascii=False)
+            
+            await searching_msg.edit_text(
+                f"✅ <b>UPI Information:</b>\n\n"
+                f"💳 UPI ID: <code>{upi_id}</code>\n\n"
+                f"<pre>{formatted_result}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        elif "raw_data" in api_result:
+            await searching_msg.edit_text(
+                f"✅ <b>UPI Information:</b>\n\n"
+                f"💳 UPI ID: <code>{upi_id}</code>\n\n"
+                f"<pre>{html.escape(api_result['raw_data'][:3000])}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await searching_msg.edit_text(
+                f"❌ <b>No Data Found</b>\n\n"
+                f"UPI ID: <code>{upi_id}</code>\n"
+                f"No records found in database.",
+                parse_mode=ParseMode.HTML
+            )
+    else:
+        await searching_msg.edit_text(
+            f"❌ <b>Search Failed</b>\n\n"
+            f"UPI ID: <code>{upi_id}</code>\n"
+            f"Error: {api_result.get('error', 'Unknown error')}",
+            parse_mode=ParseMode.HTML
+        )
+    
+    await update_user_activity(update.effective_user.id, "search_upi")
+
+async def icmr_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /icmr command for ICMR database search"""
+    if not await check_user_access(update, context, check_group=True):
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ <b>Invalid Format</b>\n\n"
+            "Please provide a phone number.\n"
+            "Example: <code>/icmr 9876543210</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    phone = re.sub(r'\D', '', context.args[0].strip())
+    
+    if len(phone) != 10:
+        await update.message.reply_text(
+            "❌ <b>Invalid Phone Number</b>\n\n"
+            "Please provide a valid 10-digit phone number.\n"
+            "Example: <code>/icmr 9876543210</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    searching_msg = await update.message.reply_text(
+        "🔍 <b>Searching ICMR database...</b>",
+        parse_mode=ParseMode.HTML
+    )
+    
+    api_result = await fetch_api_data(ICMR_API.format(phone=phone))
+    
+    if api_result["success"]:
+        if "data" in api_result and api_result["data"]:
+            formatted_result = json.dumps(api_result["data"], indent=2, ensure_ascii=False)
+            
+            await searching_msg.edit_text(
+                f"✅ <b>ICMR Database Results:</b>\n\n"
+                f"🏥 Phone: <code>{phone}</code>\n\n"
+                f"<pre>{formatted_result}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        elif "raw_data" in api_result:
+            await searching_msg.edit_text(
+                f"✅ <b>ICMR Database Results:</b>\n\n"
+                f"🏥 Phone: <code>{phone}</code>\n\n"
+                f"<pre>{html.escape(api_result['raw_data'][:3000])}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await searching_msg.edit_text(
+                f"❌ <b>No Data Found</b>\n\n"
+                f"Phone: <code>{phone}</code>\n"
+                f"No records found in ICMR database.",
+                parse_mode=ParseMode.HTML
+            )
+    else:
+        await searching_msg.edit_text(
+            f"❌ <b>Search Failed</b>\n\n"
+            f"Phone: <code>{phone}</code>\n"
+            f"Error: {api_result.get('error', 'Unknown error')}",
+            parse_mode=ParseMode.HTML
+        )
+    
+    await update_user_activity(update.effective_user.id, "search_icmr")
+
+async def vehicle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /vehicle command for vehicle information"""
+    if not await check_user_access(update, context, check_group=True):
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ <b>Invalid Format</b>\n\n"
+            "Please provide a vehicle registration number.\n"
+            "Example: <code>/vehicle UP32JM0855</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    registration = context.args[0].strip().upper()
+    
+    # Basic validation for Indian vehicle registration
+    if len(registration) < 9 or len(registration) > 11:
+        await update.message.reply_text(
+            "❌ <b>Invalid Registration Number</b>\n\n"
+            "Please provide a valid vehicle registration number.\n"
+            "Example: <code>/vehicle UP32JM0855</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    searching_msg = await update.message.reply_text(
+        "🔍 <b>Searching vehicle database...</b>",
+        parse_mode=ParseMode.HTML
+    )
+    
+    api_result = await fetch_api_data(VEHICLE_ADDRESS_API.format(registration=registration))
+    
+    if api_result["success"]:
+        if "data" in api_result and api_result["data"]:
+            formatted_result = json.dumps(api_result["data"], indent=2, ensure_ascii=False)
+            
+            await searching_msg.edit_text(
+                f"✅ <b>Vehicle Information:</b>\n\n"
+                f"🚗 Registration: <code>{registration}</code>\n\n"
+                f"<pre>{formatted_result}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        elif "raw_data" in api_result:
+            await searching_msg.edit_text(
+                f"✅ <b>Vehicle Information:</b>\n\n"
+                f"🚗 Registration: <code>{registration}</code>\n\n"
+                f"<pre>{html.escape(api_result['raw_data'][:3000])}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await searching_msg.edit_text(
+                f"❌ <b>No Data Found</b>\n\n"
+                f"Registration: <code>{registration}</code>\n"
+                f"No vehicle records found.",
+                parse_mode=ParseMode.HTML
+            )
+    else:
+        await searching_msg.edit_text(
+            f"❌ <b>Search Failed</b>\n\n"
+            f"Registration: <code>{registration}</code>\n"
+            f"Error: {api_result.get('error', 'Unknown error')}",
+            parse_mode=ParseMode.HTML
+        )
+    
+    await update_user_activity(update.effective_user.id, "search_vehicle")
+
+async def challan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /challan command for vehicle challan details"""
+    if not await check_user_access(update, context, check_group=True):
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ <b>Invalid Format</b>\n\n"
+            "Please provide a vehicle registration number.\n"
+            "Example: <code>/challan UP32JM0855</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    registration = context.args[0].strip().upper()
+    
+    # Basic validation for Indian vehicle registration
+    if len(registration) < 9 or len(registration) > 11:
+        await update.message.reply_text(
+            "❌ <b>Invalid Registration Number</b>\n\n"
+            "Please provide a valid vehicle registration number.\n"
+            "Example: <code>/challan UP32JM0855</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    searching_msg = await update.message.reply_text(
+        "🔍 <b>Searching challan database...</b>",
+        parse_mode=ParseMode.HTML
+    )
+    
+    api_result = await fetch_api_data(VEHICLE_CHALLAN_API.format(registration=registration))
+    
+    if api_result["success"]:
+        if "data" in api_result and api_result["data"]:
+            formatted_result = json.dumps(api_result["data"], indent=2, ensure_ascii=False)
+            
+            await searching_msg.edit_text(
+                f"✅ <b>Vehicle Challan Details:</b>\n\n"
+                f"📋 Registration: <code>{registration}</code>\n\n"
+                f"<pre>{formatted_result}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        elif "raw_data" in api_result:
+            await searching_msg.edit_text(
+                f"✅ <b>Vehicle Challan Details:</b>\n\n"
+                f"📋 Registration: <code>{registration}</code>\n\n"
+                f"<pre>{html.escape(api_result['raw_data'][:3000])}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await searching_msg.edit_text(
+                f"❌ <b>No Challan Found</b>\n\n"
+                f"Registration: <code>{registration}</code>\n"
+                f"No challan records found for this vehicle.",
+                parse_mode=ParseMode.HTML
+            )
+    else:
+        await searching_msg.edit_text(
+            f"❌ <b>Search Failed</b>\n\n"
+            f"Registration: <code>{registration}</code>\n"
+            f"Error: {api_result.get('error', 'Unknown error')}",
+            parse_mode=ParseMode.HTML
+        )
+    
+    await update_user_activity(update.effective_user.id, "search_challan")
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show bot statistics (admin only)"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text(
+            "❌ This command is for admins only.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        db_status = "✅ Connected" if db_connected else "❌ Offline"
+        
+        total_users = 0
+        agreed_users = 0
+        channel_joined = 0
+        banned_users = 0
+        total_searches = 0
+        
+        if db_connected and users_collection is not None:
+            try:
+                total_users = await users_collection.count_documents({})
+                agreed_users = await users_collection.count_documents({"agreed_to_terms": True})
+                channel_joined = await users_collection.count_documents({"channel_joined": True})
+                banned_users = await users_collection.count_documents({"is_banned": True})
+                
+                pipeline = [
+                    {"$group": {"_id": None, "total": {"$sum": "$total_searches"}}}
+                ]
+                search_result = await users_collection.aggregate(pipeline).to_list(1)
+                total_searches = search_result[0]["total"] if search_result else 0
+            except Exception as e:
+                logger.error(f"Error getting MongoDB stats: {e}")
+                total_users = len(USER_DATA_CACHE)
+                agreed_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("agreed_to_terms", False))
+                channel_joined = sum(1 for u in USER_DATA_CACHE.values() if u.get("channel_joined", False))
+                banned_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("is_banned", False))
+                total_searches = sum(u.get("total_searches", 0) for u in USER_DATA_CACHE.values())
+        else:
+            total_users = len(USER_DATA_CACHE)
+            agreed_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("agreed_to_terms", False))
+            channel_joined = sum(1 for u in USER_DATA_CACHE.values() if u.get("channel_joined", False))
+            banned_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("is_banned", False))
+            total_searches = sum(u.get("total_searches", 0) for u in USER_DATA_CACHE.values())
+        
+        stats_message = (
+            "📊 <b>Bot Statistics</b>\n\n"
+            f"🗄️ Database: {db_status}\n"
+            f"📡 APIs: ✅ Online\n"
+            f"🌐 Web Server: ✅ Port {PORT}\n\n"
+            f"👥 Total Users: <code>{total_users}</code>\n"
+            f"✅ Agreed to Terms: <code>{agreed_users}</code>\n"
+            f"📢 Channel Joined: <code>{channel_joined}</code>\n"
+            f"🚫 Banned Users: <code>{banned_users}</code>\n"
+            f"🔍 Total Searches: <code>{total_searches}</code>\n\n"
+            f"💾 Cache Size: <code>{len(USER_DATA_CACHE)}</code> users\n\n"
+            f"<b>Available APIs:</b>\n"
+            f"✅ Mobile Number Search\n"
+            f"✅ Rashan Card Database\n"
+            f"✅ UPI Information\n"
+            f"✅ ICMR Database\n"
+            f"✅ Vehicle Information\n"
+            f"✅ Vehicle Challan"
+        )
+        
+        await update.message.reply_text(
+            stats_message,
+            parse_mode=ParseMode.HTML
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in stats_command: {e}")
+        await update.message.reply_text(
+            f"❌ Error fetching statistics: {str(e)}",
+            parse_mode=ParseMode.HTML
+        )
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Broadcast message to all users (admin only)"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text(
+            "❌ This command is for admins only.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ <b>Invalid Format</b>\n\n"
+            "Usage: <code>/broadcast [message]</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    broadcast_message = " ".join(context.args)
+    
+    status_msg = await update.message.reply_text(
+        "📢 <b>Broadcasting message...</b>",
+        parse_mode=ParseMode.HTML
+    )
+    
+    try:
+        users = await get_all_users()
+        success_count = 0
+        failed_count = 0
+        
+        for user in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=user["user_id"],
+                    text=f"📢 <b>Announcement</b>\n\n{broadcast_message}",
+                    parse_mode=ParseMode.HTML
+                )
+                success_count += 1
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                logger.error(f"Failed to send to {user['user_id']}: {e}")
+                failed_count += 1
+        
+        await status_msg.edit_text(
+            f"✅ <b>Broadcast Complete</b>\n\n"
+            f"Success: <code>{success_count}</code>\n"
+            f"Failed: <code>{failed_count}</code>",
+            parse_mode=ParseMode.HTML
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in broadcast_command: {e}")
+        await status_msg.edit_text(
+            "❌ Error during broadcast.",
+            parse_mode=ParseMode.HTML
+        )
+
+async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ban a user (admin only)"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ <b>Invalid Format</b>\n\n"
+            "Usage: <code>/ban [user_id]</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        
+        if target_user_id in USER_DATA_CACHE:
+            USER_DATA_CACHE[target_user_id]["is_banned"] = True
+            USER_DATA_CACHE[target_user_id]["banned_date"] = datetime.now(pytz.UTC).isoformat()
+        
+        if db_connected and users_collection is not None:
+            await users_collection.update_one(
+                {"user_id": target_user_id},
+                {"$set": {
+                    "is_banned": True,
+                    "banned_date": datetime.now(pytz.UTC).isoformat()
+                }},
+                upsert=True
+            )
+        
+        await update.message.reply_text(
+            f"✅ User <code>{target_user_id}</code> has been banned.",
+            parse_mode=ParseMode.HTML
+        )
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid user ID. Please provide a numeric ID.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Error in ban_command: {e}")
+
+async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Unban a user (admin only)"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "❌ <b>Invalid Format</b>\n\n"
+            "Usage: <code>/unban [user_id]</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        
+        if target_user_id in USER_DATA_CACHE:
+            USER_DATA_CACHE[target_user_id]["is_banned"] = False
+            USER_DATA_CACHE[target_user_id].pop("banned_date", None)
+        
+        if db_connected and users_collection is not None:
+            await users_collection.update_one(
+                {"user_id": target_user_id},
+                {
+                    "$set": {"is_banned": False},
+                    "$unset": {"banned_date": ""}
+                }
+            )
+        
+        await update.message.reply_text(
+            f"✅ User <code>{target_user_id}</code> has been unbanned.",
+            parse_mode=ParseMode.HTML
+        )
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid user ID. Please provide a numeric ID.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Error in unban_command: {e}")
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle regular text messages"""
+    chat_type = update.effective_chat.type
+    text = update.message.text.strip()
+    
+    clean_text = re.sub(r'\D', '', text)
+    
+    if clean_text and len(clean_text) == 10:
+        if chat_type == 'private':
+            keyboard = [[InlineKeyboardButton("🔓 Join Private Group", url=GROUP_LINK)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                "⚠️ <b>Search Not Available Here!</b>\n\n"
+                "All searches are <b><u>ONLY available in our private group</u></b>.\n\n"
+                "👇 <b>Please join our group to search:</b>",
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            context.args = [clean_text]
+            await num_command(update, context)
+    else:
+        if chat_type == 'private':
+            await update.message.reply_text(
+                "❓ <b>Need help?</b>\n\n"
+                "Use /start to see available commands.\n\n"
+                "Note: All searches only work in our private group!",
+                parse_mode=ParseMode.HTML
+            )
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle errors"""
+    logger.error(f"Exception while handling an update: {context.error}")
+    
+    try:
+        if update and hasattr(update, 'effective_message'):
+            await update.effective_message.reply_text(
+                "❌ An unexpected error occurred. Please try again.",
+                parse_mode=ParseMode.HTML
+            )
+    except:
+        pass
 
 def main() -> None:
     """Start the bot"""
