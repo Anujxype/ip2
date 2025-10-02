@@ -9,3 +9,17 @@ services:
     envVars:
       - key: PORT
         generateValue: true
+      - key: BOT_TOKEN
+        value: 8415869688:AAHSiFfKuAo4_75e_835hgebl2iKku3RJKg
+      - key: MONGO_URI
+        value: mongodb+srv://osXspace:osXspace@cluster0.k3k6yzj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
+      - key: GROUP_CHAT_ID
+        value: -1002414357299
+      - key: ADMIN_IDS
+        value: 7167145056,6435989814
+      - key: CHANNEL_USERNAME
+        value: osXspace
+      - key: CHANNEL_LINK
+        value: https://t.me/osXspace
+      - key: GROUP_LINK
+        value: https://t.me/+bVDSE8QxqJE1M2Nl
