@@ -55,10 +55,11 @@ db_connected = False
 user_last_request = {}
 REQUEST_COOLDOWN = 5
 USER_DATA_CACHE = {}
+application = None
 
 # Disclaimer text
 DISCLAIMER_TEXT = """
-🔍 <b>Advanced OSINT Search Bot 𝐒𝐓𝐀𝐑𝐊 𝐍𝐄𝐓𝐖𝐎𝐑𝐊 🇮🇳 - Terms of Use</b>
+🔍 <b>Advanced OSINT Search Bot - Terms of Use</b>
 
 <b>⚠️ Important Disclaimer:</b>
 
@@ -102,6 +103,18 @@ async def init_mongodb():
         logger.error(f"❌ MongoDB connection failed: {e}")
         db_connected = False
         return False
+
+async def post_init(application: Application) -> None:
+    """Initialize resources on startup"""
+    await init_mongodb()
+    logger.info("Bot initialization complete")
+
+async def post_shutdown(application: Application) -> None:
+    """Cleanup resources on shutdown"""
+    global mongo_client
+    if mongo_client:
+        mongo_client.close()
+        logger.info("MongoDB connection closed")
 
 async def get_user_data(user_id: int):
     """Get user data from MongoDB or cache"""
@@ -423,7 +436,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "🏥 /icmr <code>[number]</code> — ICMR database search\n"
             "🚗 /vehicle <code>[registration]</code> — Vehicle information\n"
             "📋 /challan <code>[registration]</code> — Vehicle challan details\n\n"
-            "⚠️ <b><u>These commands ONLY work in our private group! 𝐒𝐓𝐀𝐑𝐊 𝐍𝐄𝐓𝐖𝐎𝐑𝐊 🇮🇳</u></b>\n"
+            "⚠️ <b><u>These commands ONLY work in our private group!</u></b>\n"
             "━━━━━━━━━━━━━━━━"
         )
     else:
@@ -1203,6 +1216,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def main() -> None:
     """Start the bot"""
+    global application
+    
     print("=" * 50)
     print("🤖 Advanced OSINT Search Bot Starting...")
     print("=" * 50)
@@ -1221,22 +1236,13 @@ def main() -> None:
     
     try:
         # Create application with proper configuration
-        application = Application.builder().token(BOT_TOKEN).build()
-        
-        # Initialize MongoDB on startup
-        async def startup():
-            await init_mongodb()
-        
-        # Close MongoDB on shutdown
-        async def shutdown():
-            global mongo_client
-            if mongo_client:
-                mongo_client.close()
-                logger.info("MongoDB connection closed")
-        
-        # Add startup and shutdown handlers
-        application.post_init = startup
-        application.post_shutdown = shutdown
+        application = (
+            Application.builder()
+            .token(BOT_TOKEN)
+            .post_init(post_init)
+            .post_shutdown(post_shutdown)
+            .build()
+        )
         
         # Add command handlers
         application.add_handler(CommandHandler("start", start))
@@ -1262,7 +1268,10 @@ def main() -> None:
         print("✅ Bot is running! Press Ctrl+C to stop.")
         print("=" * 50)
         
-        application.run_polling(drop_pending_updates=True)
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
         
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
