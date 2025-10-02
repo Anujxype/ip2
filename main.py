@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "8415869688:AAHSiFfKuAo4_75e_835hgebl2iKku3RJKg"
 CHANNEL_USERNAME = "osXspace"
 CHANNEL_LINK = "https://t.me/osXspace"
-API_BASE_URL = "https://paidf2.zioniiixx.workers.dev"
+API_BASE_URL = "https://osintx.info/API/krobetahack.php?key=SHAD0WINT3L&type=mobile&term="
 
 # Group configuration
 GROUP_CHAT_ID = -1002414357299
@@ -426,7 +426,7 @@ async def fetch_number_data(phone_number: str) -> dict:
     try:
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            url = f"{API_BASE_URL}/{phone_number}?paid=true"
+            url = f"{API_BASE_URL}{phone_number}"
             
             async with session.get(url) as response:
                 if response.status == 200:
