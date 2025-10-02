@@ -4,11 +4,11 @@
 import logging
 import os
 import sys
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode, ChatAction
 import aiohttp
-import asyncio
 import json
 import re
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -16,6 +16,10 @@ from datetime import datetime
 import pytz
 import html
 from aiohttp import web
+
+# Force event loop policy for Windows compatibility
+if sys.platform.startswith('win'):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # Enable logging
 logging.basicConfig(
@@ -59,7 +63,6 @@ db_connected = False
 user_last_request = {}
 REQUEST_COOLDOWN = 5
 USER_DATA_CACHE = {}
-application = None
 web_app = None
 web_runner = None
 
@@ -138,22 +141,6 @@ async def init_mongodb():
         logger.error(f"❌ MongoDB connection failed: {e}")
         db_connected = False
         return False
-
-async def post_init(application: Application) -> None:
-    """Initialize resources on startup"""
-    await init_mongodb()
-    await start_web_server()
-    logger.info("Bot initialization complete")
-
-async def post_shutdown(application: Application) -> None:
-    """Cleanup resources on shutdown"""
-    global mongo_client
-    
-    await stop_web_server()
-    
-    if mongo_client:
-        mongo_client.close()
-        logger.info("MongoDB connection closed")
 
 async def get_user_data(user_id: int):
     """Get user data from MongoDB or cache"""
@@ -1254,10 +1241,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     except:
         pass
 
-def main() -> None:
-    """Start the bot"""
-    global application
-    
+async def main():
+    """Start the bot using async context"""
     print("=" * 50)
     print("🤖 Advanced OSINT Search Bot Starting...")
     print("=" * 50)
@@ -1275,56 +1260,61 @@ def main() -> None:
     print("  ✅ Vehicle Challan")
     print("=" * 50)
     
+    # Initialize MongoDB and web server
+    await init_mongodb()
+    await start_web_server()
+    
+    # Create application
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Add command handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("num", num_command))
+    application.add_handler(CommandHandler("aadhaar", aadhaar_command))
+    application.add_handler(CommandHandler("upi", upi_command))
+    application.add_handler(CommandHandler("icmr", icmr_command))
+    application.add_handler(CommandHandler("vehicle", vehicle_command))
+    application.add_handler(CommandHandler("challan", challan_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("ban", ban_command))
+    application.add_handler(CommandHandler("unban", unban_command))
+    
+    # Add callback and message handlers
+    application.add_handler(CallbackQueryHandler(handle_callback_query))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    # Add error handler
+    application.add_error_handler(error_handler)
+    
+    # Initialize and start bot
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    
+    print("✅ Bot is running! Press Ctrl+C to stop.")
+    print("=" * 50)
+    
+    # Keep the bot running
     try:
-        # Create application with proper configuration
-        application = (
-            Application.builder()
-            .token(BOT_TOKEN)
-            .post_init(post_init)
-            .post_shutdown(post_shutdown)
-            .build()
-        )
-        
-        # Add command handlers
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("num", num_command))
-        application.add_handler(CommandHandler("aadhaar", aadhaar_command))
-        application.add_handler(CommandHandler("upi", upi_command))
-        application.add_handler(CommandHandler("icmr", icmr_command))
-        application.add_handler(CommandHandler("vehicle", vehicle_command))
-        application.add_handler(CommandHandler("challan", challan_command))
-        application.add_handler(CommandHandler("stats", stats_command))
-        application.add_handler(CommandHandler("broadcast", broadcast_command))
-        application.add_handler(CommandHandler("ban", ban_command))
-        application.add_handler(CommandHandler("unban", unban_command))
-        
-        # Add callback and message handlers
-        application.add_handler(CallbackQueryHandler(handle_callback_query))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-        
-        # Add error handler
-        application.add_error_handler(error_handler)
-        
-        # Start polling
-        print("✅ Bot is running! Press Ctrl+C to stop.")
-        print("=" * 50)
-        
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
-        print(f"❌ Failed to start bot: {e}")
-        sys.exit(1)
+        while True:
+            await asyncio.sleep(3600)
+    except KeyboardInterrupt:
+        print("\n⏹️ Stopping bot...")
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+        await stop_web_server()
+        if mongo_client:
+            mongo_client.close()
+        print("✅ Bot stopped successfully")
 
 if __name__ == '__main__':
     try:
-        main()
+        asyncio.run(main())
     except KeyboardInterrupt:
         print("\n⏹️ Bot stopped by user")
-        sys.exit(0)
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         print(f"❌ Fatal error: {e}")
