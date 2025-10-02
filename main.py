@@ -11,18 +11,11 @@ from telegram.constants import ParseMode, ChatAction
 import aiohttp
 import json
 import re
+from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime
 import pytz
 import html
 from aiohttp import web
-
-# MongoDB imports (optional)
-try:
-    from motor.motor_asyncio import AsyncIOMotorClient
-    MONGODB_AVAILABLE = True
-except ImportError:
-    MONGODB_AVAILABLE = False
-    print("⚠️ MongoDB support not available, using memory storage only")
 
 # Force event loop policy for Windows compatibility
 if sys.platform.startswith('win'):
@@ -36,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot configuration - Use environment variables for sensitive data
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8415869688:AAHSiFfKuAo4_75e_835hgebl2iKku3RJKg")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "osXspace")
 CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "https://t.me/osXspace")
 
@@ -60,7 +53,7 @@ MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://osXspace:osXspace@cluster
 DB_NAME = os.environ.get("DB_NAME", "osint_bot")
 COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "users")
 
-# Render web service port
+# Render web service port - REQUIRED for Render
 PORT = int(os.environ.get("PORT", 10000))
 
 # Global variables
@@ -70,8 +63,7 @@ db_connected = False
 user_last_request = {}
 REQUEST_COOLDOWN = 5
 USER_DATA_CACHE = {}
-web_app = None
-web_runner = None
+bot_application = None
 
 # Disclaimer text
 DISCLAIMER_TEXT = """
@@ -102,44 +94,30 @@ DISCLAIMER_TEXT = """
 <b>By clicking "I Agree", you accept these terms and conditions.</b>
 """
 
-# Web server for Render health checks
+# ==================== WEB SERVER FOR RENDER ====================
+# Required for Render health checks and to keep the service alive
+
 async def health_check(request):
     """Health check endpoint for Render"""
     return web.Response(text="Bot is running!", status=200)
 
-async def start_web_server():
-    """Start web server for Render health checks"""
-    global web_app, web_runner
-    
-    try:
-        web_app = web.Application()
-        web_app.router.add_get('/', health_check)
-        web_app.router.add_get('/health', health_check)
-        
-        web_runner = web.AppRunner(web_app)
-        await web_runner.setup()
-        site = web.TCPSite(web_runner, '0.0.0.0', PORT)
-        await site.start()
-        logger.info(f"Web server started on port {PORT}")
-    except Exception as e:
-        logger.error(f"Failed to start web server: {e}")
+async def handle_web_request(request):
+    """Handle all web requests"""
+    return web.Response(text="Telegram Bot is running on Render!")
 
-async def stop_web_server():
-    """Stop web server"""
-    global web_runner
-    if web_runner:
-        await web_runner.cleanup()
-        logger.info("Web server stopped")
+def setup_web_server():
+    """Set up and return the web application"""
+    web_app = web.Application()
+    web_app.router.add_get('/', health_check)
+    web_app.router.add_get('/health', health_check)
+    web_app.router.add_get('/webhook', handle_web_request)
+    return web_app
+
+# ==================== BOT CORE FUNCTIONALITY ====================
 
 async def init_mongodb():
     """Initialize MongoDB connection"""
     global mongo_client, users_collection, db_connected
-    
-    if not MONGODB_AVAILABLE:
-        logger.warning("MongoDB driver not available, using memory storage")
-        db_connected = False
-        return False
-    
     try:
         mongo_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         db = mongo_client[DB_NAME]
@@ -157,11 +135,6 @@ async def init_mongodb():
 
 async def get_user_data(user_id: int):
     """Get user data from MongoDB or cache"""
-    # First check cache
-    if user_id in USER_DATA_CACHE:
-        return USER_DATA_CACHE[user_id]
-    
-    # Then try MongoDB if connected
     try:
         if db_connected and users_collection is not None:
             user = await users_collection.find_one({"user_id": user_id})
@@ -170,9 +143,9 @@ async def get_user_data(user_id: int):
                 USER_DATA_CACHE[user_id] = user
                 return user
     except Exception as e:
-        logger.error(f"Error getting user data from MongoDB: {e}")
+        logger.error(f"Error getting user data: {e}")
     
-    return None
+    return USER_DATA_CACHE.get(user_id, None)
 
 async def save_user_data(user_data: dict):
     """Save or update user data"""
@@ -188,15 +161,14 @@ async def save_user_data(user_data: dict):
             )
             return True
     except Exception as e:
-        logger.error(f"Error saving user data to MongoDB: {e}")
+        logger.error(f"Error saving user data: {e}")
     
-    return True  # Return True even if MongoDB fails (data is in cache)
+    return True
 
 async def get_all_users():
     """Get all users who agreed to terms"""
     users = []
     
-    # First try MongoDB
     try:
         if db_connected and users_collection is not None:
             async for user in users_collection.find({"agreed_to_terms": True}):
@@ -205,9 +177,8 @@ async def get_all_users():
             if users:
                 return users
     except Exception as e:
-        logger.error(f"Error getting all users from MongoDB: {e}")
+        logger.error(f"Error getting all users: {e}")
     
-    # Fallback to cache
     for user_data in USER_DATA_CACHE.values():
         if user_data.get("agreed_to_terms", False):
             users.append(user_data)
@@ -219,14 +190,12 @@ async def update_user_activity(user_id: int, activity_type: str):
     try:
         timestamp = datetime.now(pytz.UTC).isoformat()
         
-        # Update cache
         if user_id in USER_DATA_CACHE:
             USER_DATA_CACHE[user_id]["last_activity"] = timestamp
             USER_DATA_CACHE[user_id]["last_activity_type"] = activity_type
             if activity_type.startswith("search"):
                 USER_DATA_CACHE[user_id]["total_searches"] = USER_DATA_CACHE[user_id].get("total_searches", 0) + 1
         
-        # Try to update MongoDB
         if db_connected and users_collection is not None:
             update_data = {
                 "$set": {
@@ -1006,7 +975,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     
     try:
-        db_status = "✅ Connected" if db_connected else "❌ Offline (Using Memory)"
+        db_status = "✅ Connected" if db_connected else "❌ Offline"
         
         total_users = 0
         agreed_users = 0
@@ -1028,14 +997,12 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 total_searches = search_result[0]["total"] if search_result else 0
             except Exception as e:
                 logger.error(f"Error getting MongoDB stats: {e}")
-                # Fallback to cache
                 total_users = len(USER_DATA_CACHE)
                 agreed_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("agreed_to_terms", False))
                 channel_joined = sum(1 for u in USER_DATA_CACHE.values() if u.get("channel_joined", False))
                 banned_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("is_banned", False))
                 total_searches = sum(u.get("total_searches", 0) for u in USER_DATA_CACHE.values())
         else:
-            # Use cache data
             total_users = len(USER_DATA_CACHE)
             agreed_users = sum(1 for u in USER_DATA_CACHE.values() if u.get("agreed_to_terms", False))
             channel_joined = sum(1 for u in USER_DATA_CACHE.values() if u.get("channel_joined", False))
@@ -1150,14 +1117,10 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         target_user_id = int(context.args[0])
         
-        # Update cache
-        if target_user_id not in USER_DATA_CACHE:
-            USER_DATA_CACHE[target_user_id] = {"user_id": target_user_id}
+        if target_user_id in USER_DATA_CACHE:
+            USER_DATA_CACHE[target_user_id]["is_banned"] = True
+            USER_DATA_CACHE[target_user_id]["banned_date"] = datetime.now(pytz.UTC).isoformat()
         
-        USER_DATA_CACHE[target_user_id]["is_banned"] = True
-        USER_DATA_CACHE[target_user_id]["banned_date"] = datetime.now(pytz.UTC).isoformat()
-        
-        # Try to update MongoDB
         if db_connected and users_collection is not None:
             await users_collection.update_one(
                 {"user_id": target_user_id},
@@ -1199,12 +1162,10 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         target_user_id = int(context.args[0])
         
-        # Update cache
         if target_user_id in USER_DATA_CACHE:
             USER_DATA_CACHE[target_user_id]["is_banned"] = False
             USER_DATA_CACHE[target_user_id].pop("banned_date", None)
         
-        # Try to update MongoDB
         if db_connected and users_collection is not None:
             await users_collection.update_one(
                 {"user_id": target_user_id},
@@ -1271,30 +1232,13 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     except:
         pass
 
-async def main():
-    """Start the bot using async context"""
-    print("=" * 50)
-    print("🤖 Advanced OSINT Search Bot Starting...")
-    print("=" * 50)
-    print(f"📱 Bot Token: {BOT_TOKEN[:15]}...")
-    print(f"📢 Channel: @{CHANNEL_USERNAME}")
-    print(f"👥 Group ID: {GROUP_CHAT_ID}")
-    print(f"👮 Admin IDs: {ADMIN_IDS}")
-    print(f"🌐 Web Port: {PORT}")
-    print("\n📡 Available APIs:")
-    print("  ✅ Mobile Number Search")
-    print("  ✅ Rashan Card Database")
-    print("  ✅ UPI Information")
-    print("  ✅ ICMR Database")
-    print("  ✅ Vehicle Information")
-    print("  ✅ Vehicle Challan")
-    print("=" * 50)
+# ==================== BOT SETUP AND START ====================
+
+def setup_bot_application():
+    """Set up and return the bot application"""
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN environment variable is required")
     
-    # Initialize MongoDB and web server
-    await init_mongodb()
-    await start_web_server()
-    
-    # Create application
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Add command handlers
@@ -1317,28 +1261,83 @@ async def main():
     # Add error handler
     application.add_error_handler(error_handler)
     
-    # Initialize and start bot
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    return application
+
+async def start_bot():
+    """Start the bot"""
+    global bot_application
+    
+    print("=" * 50)
+    print("🤖 Advanced OSINT Search Bot Starting...")
+    print("=" * 50)
+    print(f"📱 Bot Token: {BOT_TOKEN[:10]}...")
+    print(f"📢 Channel: @{CHANNEL_USERNAME}")
+    print(f"👥 Group ID: {GROUP_CHAT_ID}")
+    print(f"👮 Admin IDs: {ADMIN_IDS}")
+    print(f"🌐 Web Port: {PORT}")
+    print("\n📡 Available APIs:")
+    print("  ✅ Mobile Number Search")
+    print("  ✅ Rashan Card Database")
+    print("  ✅ UPI Information")
+    print("  ✅ ICMR Database")
+    print("  ✅ Vehicle Information")
+    print("  ✅ Vehicle Challan")
+    print("=" * 50)
+    
+    # Initialize MongoDB
+    await init_mongodb()
+    
+    # Set up and start bot
+    bot_application = setup_bot_application()
+    await bot_application.initialize()
+    await bot_application.start()
+    await bot_application.updater.start_polling(
+        allowed_updates=Update.ALL_TYPES, 
+        drop_pending_updates=True
+    )
     
     print("✅ Bot is running! Press Ctrl+C to stop.")
     print("=" * 50)
+
+async def stop_bot():
+    """Stop the bot gracefully"""
+    global bot_application
+    if bot_application:
+        await bot_application.updater.stop()
+        await bot_application.stop()
+        await bot_application.shutdown()
+    if mongo_client:
+        mongo_client.close()
+    print("✅ Bot stopped successfully")
+
+# ==================== MAIN ENTRY POINT ====================
+
+async def main():
+    """Main function to run both web server and bot"""
+    # Start the bot
+    await start_bot()
     
-    # Keep the bot running
+    # Set up web server for Render health checks
+    web_app = setup_web_server()
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    
+    # Bind to 0.0.0.0 and use PORT environment variable - REQUIRED for Render
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    
+    print(f"🌐 Web server started on port {PORT}")
+    print("✅ Both bot and web server are running!")
+    
+    # Keep the application running
     try:
         while True:
             await asyncio.sleep(3600)
     except KeyboardInterrupt:
         print("\n⏹️ Stopping bot...")
     finally:
-        await application.updater.stop()
-        await application.stop()
-        await application.shutdown()
-        await stop_web_server()
-        if mongo_client:
-            mongo_client.close()
-        print("✅ Bot stopped successfully")
+        await stop_bot()
+        await runner.cleanup()
 
 if __name__ == '__main__':
     try:
